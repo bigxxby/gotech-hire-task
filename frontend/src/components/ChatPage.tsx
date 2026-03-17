@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Socket } from 'socket.io-client';
 import RoomList from './RoomList';
 import MessageItem from './MessageItem';
-import Header from '../class-components/Header.class';
+import Header from './Header';
 
 interface Room {
   id: number;
@@ -10,12 +10,13 @@ interface Room {
   description?: string;
 }
 
-interface Message {
+interface MessageData {
   id: number;
   content: string;
   username: string;
   senderName: string;
   createdAt: string;
+  userId: number;
 }
 
 interface Props {
@@ -26,60 +27,55 @@ interface Props {
   onLogout: () => void;
 }
 
+const PAGE_SIZE = 50;
+
 export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Props) {
-  const [rooms, setRooms] = useState<any[]>([]);
+  const [rooms, setRooms] = useState<Room[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
-  const [messages, setMessages] = useState<any[]>([]);
+  const [messages, setMessages] = useState<MessageData[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [newRoomName, setNewRoomName] = useState('');
   const [newRoomDesc, setNewRoomDesc] = useState('');
   const [showCreateRoom, setShowCreateRoom] = useState(false);
   const [username, setUsername] = useState('');
-  const [isConnected, setIsConnected] = useState(false);
+  const [isConnected, setIsConnected] = useState(socket.connected);
   const [loadingMessages, setLoadingMessages] = useState(false);
-
-  // FLAW: hardcoded URL (occurrence 4 of 4) - should use apiUrl prop
-  const HARDCODED_API = 'http://localhost:3000';
 
   useEffect(() => {
     fetchRooms();
     fetchCurrentUser();
+  }, []);
 
-    socket.on('connect', () => {
-      setIsConnected(true);
-    });
+  useEffect(() => {
+    const onConnect = () => setIsConnected(true);
+    const onDisconnect = () => setIsConnected(false);
+    const onNewMessage = (message: MessageData) => {
+      setMessages((prev) => [...prev, message]);
+    };
 
-    socket.on('disconnect', () => {
-      setIsConnected(false);
-    });
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.on('newMessage', onNewMessage);
 
-    // FLAW: on every WS message, re-fetches ALL messages via REST instead of just appending
-    socket.on('newMessage', (message: any) => {
-      console.log('New message received:', message);
-      // should just be: setMessages(prev => [...prev, message]);
-      if (selectedRoom) {
-        fetchMessages(selectedRoom.id); // re-fetches everything!
-      }
-    });
-
-    // FLAW: no socket.off() cleanup - causes memory leaks and duplicate handlers
-    // return () => { socket.off('newMessage'); socket.off('connect'); socket.off('disconnect'); };
-  }, []); // FLAW: missing deps [selectedRoom] - stale closure
+    return () => {
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+      socket.off('newMessage', onNewMessage);
+    };
+  }, [socket]);
 
   const fetchCurrentUser = async () => {
-    // fetches all users just to find current user's username - very inefficient
-    const res = await fetch(`${HARDCODED_API}/users`, {
+    const res = await fetch(`${apiUrl}/users/me`, {
       headers: { Authorization: `Bearer ${token}` },
     });
-    const users = await res.json();
-    const currentUser = users.find((u: any) => u.id === userId);
-    if (currentUser) {
-      setUsername(currentUser.username);
+    const user = await res.json();
+    if (user?.username) {
+      setUsername(user.username);
     }
   };
 
   const fetchRooms = async () => {
-    const res = await fetch(`${HARDCODED_API}/chat/rooms`, {
+    const res = await fetch(`${apiUrl}/chat/rooms`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     const data = await res.json();
@@ -88,7 +84,7 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
 
   const fetchMessages = async (roomId: number) => {
     setLoadingMessages(true);
-    const res = await fetch(`${HARDCODED_API}/chat/rooms/${roomId}/messages`, {
+    const res = await fetch(`${apiUrl}/chat/rooms/${roomId}/messages?limit=${PAGE_SIZE}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     const data = await res.json();
@@ -101,18 +97,17 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
       socket.emit('leaveRoom', { roomId: selectedRoom.id });
     }
     setSelectedRoom(room);
+    setMessages([]);
     socket.emit('joinRoom', { roomId: room.id });
     fetchMessages(room.id);
   };
 
-  const handleSendMessage = async () => {
+  const handleSendMessage = () => {
     if (!newMessage.trim() || !selectedRoom) return;
 
     socket.emit('sendMessage', {
       roomId: selectedRoom.id,
-      userId,              // FLAW: client supplies userId - no server-side verification
       content: newMessage,
-      senderName: username,
     });
 
     setNewMessage('');
@@ -121,7 +116,7 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
   const handleCreateRoom = async () => {
     if (!newRoomName.trim()) return;
 
-    await fetch(`${HARDCODED_API}/chat/rooms`, {
+    await fetch(`${apiUrl}/chat/rooms`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -136,45 +131,10 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
     fetchRooms();
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       handleSendMessage();
     }
-  };
-
-  // inline styles duplicated throughout - no CSS modules or styled-components
-  const containerStyle: React.CSSProperties = {
-    display: 'flex',
-    height: '100vh',
-    fontFamily: 'Arial, sans-serif',
-  };
-
-  const sidebarStyle: React.CSSProperties = {
-    width: '250px',
-    borderRight: '1px solid #ddd',
-    display: 'flex',
-    flexDirection: 'column',
-    padding: '10px',
-    backgroundColor: '#f5f5f5',
-  };
-
-  const mainStyle: React.CSSProperties = {
-    flex: 1,
-    display: 'flex',
-    flexDirection: 'column',
-  };
-
-  const messagesStyle: React.CSSProperties = {
-    flex: 1,
-    overflowY: 'auto',
-    padding: '10px',
-  };
-
-  const inputAreaStyle: React.CSSProperties = {
-    display: 'flex',
-    padding: '10px',
-    borderTop: '1px solid #ddd',
-    gap: '10px',
   };
 
   return (
@@ -184,7 +144,12 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
           <h3 style={{ margin: 0 }}>Rooms</h3>
-          <button onClick={() => setShowCreateRoom(!showCreateRoom)} style={{ fontSize: '20px', cursor: 'pointer', border: 'none', background: 'none' }}>+</button>
+          <button
+            onClick={() => setShowCreateRoom(!showCreateRoom)}
+            style={{ fontSize: '20px', cursor: 'pointer', border: 'none', background: 'none' }}
+          >
+            +
+          </button>
         </div>
 
         {showCreateRoom && (
@@ -192,28 +157,22 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
             <input
               placeholder="Room name"
               value={newRoomName}
-              onChange={e => setNewRoomName(e.target.value)}
+              onChange={(e) => setNewRoomName(e.target.value)}
               style={{ padding: '5px' }}
             />
             <input
               placeholder="Description (optional)"
               value={newRoomDesc}
-              onChange={e => setNewRoomDesc(e.target.value)}
+              onChange={(e) => setNewRoomDesc(e.target.value)}
               style={{ padding: '5px' }}
             />
-            <button onClick={handleCreateRoom} style={{ padding: '5px', cursor: 'pointer' }}>Create</button>
+            <button onClick={handleCreateRoom} style={{ padding: '5px', cursor: 'pointer' }}>
+              Create
+            </button>
           </div>
         )}
 
-        {/* Prop drilling: passing token, socket, apiUrl down just to pass further */}
-        <RoomList
-          rooms={rooms}
-          selectedRoom={selectedRoom}
-          onSelectRoom={handleRoomSelect}
-          token={token}
-          socket={socket}
-          apiUrl={apiUrl}
-        />
+        <RoomList rooms={rooms} selectedRoom={selectedRoom} onSelectRoom={handleRoomSelect} />
       </div>
 
       <div style={mainStyle}>
@@ -221,23 +180,17 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
           <>
             <div style={{ padding: '10px', borderBottom: '1px solid #ddd', backgroundColor: '#f9f9f9' }}>
               <h3 style={{ margin: 0 }}>#{selectedRoom.name}</h3>
-              {selectedRoom.description && <p style={{ margin: '5px 0 0', color: '#666', fontSize: '14px' }}>{selectedRoom.description}</p>}
+              {selectedRoom.description && (
+                <p style={{ margin: '5px 0 0', color: '#666', fontSize: '14px' }}>{selectedRoom.description}</p>
+              )}
             </div>
 
             <div style={messagesStyle}>
               {loadingMessages ? (
                 <p>Loading messages...</p>
               ) : (
-                messages.map((msg, index) => (
-                  // FLAW: using array index as key
-                  <MessageItem
-                    key={index}
-                    message={msg}
-                    isOwn={msg.user_id === userId}
-                    token={token}
-                    socket={socket}
-                    apiUrl={apiUrl}
-                  />
+                messages.map((msg) => (
+                  <MessageItem key={msg.id} message={msg} isOwn={msg.userId === userId} />
                 ))
               )}
             </div>
@@ -245,15 +198,12 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
             <div style={inputAreaStyle}>
               <input
                 value={newMessage}
-                onChange={e => setNewMessage(e.target.value)}
-                onKeyPress={handleKeyPress}
+                onChange={(e) => setNewMessage(e.target.value)}
+                onKeyDown={handleKeyDown}
                 placeholder="Type a message..."
                 style={{ flex: 1, padding: '8px', fontSize: '16px' }}
               />
-              <button
-                onClick={handleSendMessage}
-                style={{ padding: '8px 16px', fontSize: '16px', cursor: 'pointer' }}
-              >
+              <button onClick={handleSendMessage} style={{ padding: '8px 16px', fontSize: '16px', cursor: 'pointer' }}>
                 Send
               </button>
             </div>
@@ -267,3 +217,37 @@ export default function ChatPage({ token, userId, socket, apiUrl, onLogout }: Pr
     </div>
   );
 }
+
+const containerStyle: React.CSSProperties = {
+  display: 'flex',
+  height: '100vh',
+  fontFamily: 'Arial, sans-serif',
+};
+
+const sidebarStyle: React.CSSProperties = {
+  width: '250px',
+  borderRight: '1px solid #ddd',
+  display: 'flex',
+  flexDirection: 'column',
+  padding: '10px',
+  backgroundColor: '#f5f5f5',
+};
+
+const mainStyle: React.CSSProperties = {
+  flex: 1,
+  display: 'flex',
+  flexDirection: 'column',
+};
+
+const messagesStyle: React.CSSProperties = {
+  flex: 1,
+  overflowY: 'auto',
+  padding: '10px',
+};
+
+const inputAreaStyle: React.CSSProperties = {
+  display: 'flex',
+  padding: '10px',
+  borderTop: '1px solid #ddd',
+  gap: '10px',
+};

@@ -27,7 +27,7 @@ services:
       DB_USER: postgres
       DB_PASSWORD: postgres
       DB_NAME: chatdb
-      # JWT_SECRET intentionally omitted - hardcoded in source as a flaw
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
     depends_on:
       postgres:
         condition: service_healthy
